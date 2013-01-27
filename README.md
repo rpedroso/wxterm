@@ -1,4 +1,1 @@
-wxterm
-======
-
-wxPython terminal emulator
+README
