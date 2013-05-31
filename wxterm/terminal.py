@@ -16,6 +16,12 @@ from collections import namedtuple
 from pyte import graphics as g
 from .colors256 import CLUT
 
+use_GC = False
+if use_GC:
+    GCDC = wx.GCDC
+else:
+    GCDC = lambda a: a
+
 
 draw_done = threading.Event()
 
@@ -164,7 +170,7 @@ class TerminalWindow(wx.ScrolledWindow):
         self.__stream.attach(self.__screen)
         self.__reset()
 
-        self.__resize(w, h)
+        #self.__resize(w, h)
         self.Bind(wx.EVT_PAINT, self.__on_paint)
         self.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
         self.Bind(wx.EVT_SIZE, self.__on_size)
@@ -180,8 +186,10 @@ class TerminalWindow(wx.ScrolledWindow):
         #print [a for a in dir(self) if 'focus' in a.lower()]
         self.__has_focus = self.FindFocus() is self
 
-    def __update(self):
-        dc = wx.BufferedDC(wx.ClientDC(self), self.__buffer)
+    def __update(self, clear=False):
+        dc = GCDC(wx.BufferedDC(wx.ClientDC(self), self.__buffer))
+        if clear:
+            self.__clear_buffer(dc)
         self.__draw(dc)
 
     def __on_kill_focus(self, event):
@@ -227,7 +235,7 @@ class TerminalWindow(wx.ScrolledWindow):
         return None
 
     def __on_char(self, event):
-        keycode = event.GetUnicodeKey()
+        keycode = event.GetUnicodeKey() or event.GetKeyCode()
         # On my box arrows with modifiers works ok inside vim when TERM=xterm
         # With TERM=linux inside vim does not work without a map ex:
         # :map <ESC>[1;5C <C-Right>
@@ -241,9 +249,11 @@ class TerminalWindow(wx.ScrolledWindow):
                 text = self.__clipboard_get()
                 if text:
                     os.write(self.__io, text.encode('utf-8'))
+            event.Skip()
             return
 
         char = None
+        #print keycode
         if keycode == wx.WXK_UP:
             if event.ControlDown():
                 char = "\033[1;5A"
@@ -290,25 +300,34 @@ class TerminalWindow(wx.ScrolledWindow):
         if char:
             os.write(self.__io, char.encode('utf-8'))
 
-        #event.Skip()
+        if keycode == wx.WXK_TAB:
+            return
+        event.Skip()
 
     def __on_size(self, event):
         self.__resize(*event.GetSize())
-        event.Skip()
+        #event.Skip()
 
     def __reset(self):
         self.__screen.reset()
         # to have accented chars displayed correctly
         self.__screen.set_charset('B', '(')
-        self.__clear_buffer()
-        self.__update()
+        #self.__clear_buffer()
+        self.__update(clear=True)
 
-    def __clear_buffer(self):
-        dc = wx.BufferedDC(wx.ClientDC(self), self.__buffer)
+    def __clear_buffer(self, dc=None):
+        if dc is None:
+            dc = GCDC(wx.BufferedDC(wx.ClientDC(self), self.__buffer))
+        dc.SetBackgroundMode(wx.SOLID)
         dc.SetBackground(wx.BLACK_BRUSH)
         dc.Clear()
 
+    def IsShown(self):
+        return wx.ScrolledWindow.IsShown(self)
+
     def __resize(self, w, h):
+        if not self.IsShown():
+            return
         if self.__io and self.__screen:
             cw, lh = self.__col_width, self.__line_height
             new_w = w / cw
@@ -319,16 +338,17 @@ class TerminalWindow(wx.ScrolledWindow):
                 fcntl.ioctl(self.__io, termios.TIOCSWINSZ,
                         struct.pack("hhhh", new_h, new_w, 0, 0))
                 self.__screen.resize(new_h, new_w)
-                self.__clear_buffer()
-                self.__update()
+                #self.__clear_buffer()
+                self.__update(clear=True)
                 self.__update_timer = None
 
             if self.__update_timer:
                 self.__update_timer.Stop()
-            self.__update_timer = wx.FutureCall(100, __update)
+            self.__update_timer = wx.FutureCall(10, __update)
+            #__update()
 
     def __on_paint(self, event):
-        dc = wx.BufferedPaintDC(self, self.__buffer)
+        dc = GCDC(wx.BufferedPaintDC(self, self.__buffer))
 
     def __draw_line(self, dc, y, lineno, linedata):
         prev_style = None
@@ -449,7 +469,7 @@ class TerminalWindow(wx.ScrolledWindow):
         self.__stream.feed(data)
         self.__record_cursor_position()
         self.__update()
-        self.Refresh(False)
+        #self.Refresh(False)
 
     def __on_leftdown(self, event):
         col = event.GetX() / self.__col_width
@@ -589,12 +609,14 @@ class TerminalWindow(wx.ScrolledWindow):
     feed_child = FeedChild
 
     def SetFont(self, font):
-        self.__font = font
-        #wx.ScrolledWindow.SetFont(self, font)
-        dc = wx.ClientDC(self)
-        dc.SetFont(font)
-        self.__col_width,  self.__line_height = dc.GetTextExtent("W")
-        self.__resize(*self.GetSize())
+        def _f():
+            self.__font = font
+            #wx.ScrolledWindow.SetFont(self, font)
+            dc = GCDC(wx.ClientDC(self))
+            dc.SetFont(font)
+            self.__col_width,  self.__line_height = dc.GetTextExtent("W")
+            self.__resize(*self.GetSize())
+        wx.CallAfter(_f)
 
 
 def selection(begin, end, width):
